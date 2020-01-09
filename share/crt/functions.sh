@@ -25,11 +25,11 @@ function create_config
 cat<<EOF
 COUNTRY=DE
 STATE=Bavaria
-LOCATION=Bellenberg
+LOCATION=Munich
 ORGANISATION=@@@@_SELF_SIGNED_CERTIFICATE_@@@@
 COMMON_NAME=@@@@_SELF_SIGN_ROOT_CERTIFICATE_AUTHORITY_@@@@
 OU=office
-EMAIL=baldur@email.de
+EMAIL=test@example.com
 EOF
 }
 ##############################################################################
