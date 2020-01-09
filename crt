@@ -450,7 +450,8 @@ function main_parse_args
 
 function main
 {
-  SCRIPT_DIR=$(realpath "$0")
+  SCRIPT_PATH=$(realpath "$0")
+  SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
   CRT_SHARE_DIR="$SCRIPT_DIR/share/crt"
   CRT_OPENSSL_CONFIG_FILE="$CRT_SHARE_DIR/openssl.cnf"
   CRT_FORCE_KEY_CREATION=0
