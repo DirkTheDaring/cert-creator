@@ -1,4 +1,4 @@
-#!/bin/sh 
+#!/usr/bin/env bash
 
 ##############################################################################
 function recursive_config_search
