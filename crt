@@ -1,0 +1,481 @@
+#!/bin/sh
+
+function show_help
+{
+cat<<EOF
+crt [options] argument [argument_options] 
+
+Options
+  -h, --help
+  -w, --workspace   workspace dir
+
+Argument
+  create
+  ca-create
+  sign
+  update
+  pkcs12-export
+  ca-pkcs12-export
+  verify
+  dump
+  publish
+
+Example:
+  # Crete workspace example
+  crt -w example create
+EOF
+}
+
+
+function create_node
+{
+local HOSTNAME=$(hostname)
+local DOMAIN=$(hostname -d)
+local IP=$(hostname -i)
+cat<<EOF
+NAME="$HOSTNAME"
+DNS_LIST="*.$DOMAIN"
+IP_LIST="$IP"
+KEY_LENGTH=$CRT_KEY_LENGTH
+EOF
+
+}
+function create_cert
+{
+  local CONFIG_FILE=$1
+  local NAME=""
+  local DNS_LIST=""
+  local IP_LIST=""
+  local KEY_LENGTH=""
+
+  . "$CONFIG_FILE"
+
+  # Build path to key and csr 
+  KEY_FILE="$CRT_WORKSPACE_DIR/$CRT_KEY_DIR/$NAME.key"
+       CSR="$CRT_WORKSPACE_DIR/$CRT_CSR_DIR/$NAME.csr"
+
+  # only if config file is newer than csr we should regenerate the request
+  [ "$CONFIG_FILE" -nt  "$CSR" ] || return 0
+
+
+  if [ ! -f "$KEY_FILE" -o $CRT_FORCE_KEY_CREATION == 1 ]; then 
+    echo "CREATE new key for $NAME"
+    RET=$(create_certificate_key "$KEY_FILE" "$CRT_KEY_LENGTH")
+    if [ ! $RET = 0 ]; then
+      echo "FAILED: create_certificate_key $KEY_FILE $CRT_KEY_LENGTH"
+      exit $RET
+    fi
+  fi
+
+  subject="/C=$COUNTRY/ST=$STATE/L=$LOCATION/O=$ORGANISATION/CN=$NAME"
+  subjectAltName=$(create_subjectAltName "$NAME" "$DNS_LIST" "$IP_LIST")
+  export CRT_WORKSPACE_DIR
+  create_certificate_request "$CRT_OPENSSL_CONFIG_FILE" "$KEY_FILE" "$CSR" "$subject" "$subjectAltName" "$CRT_DAYS"
+  RET=$?
+  if [ $RET != 0 ]; then
+    echo "FAILED: create_certificate_request $CSR"
+    exit $RET
+  fi
+
+  if [ "$CRT_DUMP_CERTIFICATE_REQUEST" == "1" ]; 
+  then
+    dump_csr "$CSR"
+  fi
+
+}
+
+function determine_workspace_dir
+{
+  # If empty try to search
+  if [ -z  "$CRT_WORKSPACE_DIR" ]; then
+    CRT_WORKSPACE_DIR=$(recursive_config_search "$(pwd)")
+  fi
+
+  if [ -z "$CRT_WORKSPACE_DIR" ]; then
+    echo "workspace not found."
+    exit 1
+  fi
+
+  # if it exists and is a dir just do nothing
+  if [ -d "$CRT_WORKSPACE_DIR" ]; then
+    return 
+  fi 
+  # Does something of the same name exist
+  if [ -e "$CRT_WORKSPACE_DIR" ]; then
+     echo "is not a Direcotry: $CRT_WORKSPACE_DIR"
+     exit 
+  fi
+
+  echo "Creating workspace dir: $CRT_WORKSPACE_DIR"
+  mkdir -p  "$CRT_WORKSPACE_DIR" 
+  if [ ! $? = 0 ]; then 
+    echo "could not create directory: $CRT_WORKSPACE_DIR"
+    exit 1
+  fi
+
+  CRT_CONFIG_DIR="$CRT_WORKSPACE_DIR/.certificates" 
+  mkdir -p  "$CRT_CONFIG_DIR" 
+  if [ ! $? = 0 ]; then 
+    echo "could not create directory: $CRT_CONFIG_DIR"
+    exit 1
+  fi
+
+  CRT_CONFIG_FILE="$CRT_WORKSPACE_DIR/.certificates/config" 
+  create_config >"$CRT_CONFIG_FILE"
+  if [ ! $? = 0 ]; then 
+    echo "could not create file: $CRT_CONFIG_FILE"
+    exit 1
+  fi
+   
+  chmod 700 "$CRT_WORKSPACE_DIR"
+
+  # Populate with necessary dis
+
+  for DIR in "$CRT_CSR_DIR" "$CRT_KEY_DIR" "$CRT_NODES" "$CRT_CAKEYS_DIR" "$CRT_CACERT_DIR" "$CRT_CRT_DIR" "$CRT_CRT_CONF_DIR"; do
+    [ -d "$CRT_WORKSPACE_DIR/$DIR" ] || mkdir -p "$CRT_WORKSPACE_DIR/$DIR"
+  done
+
+  create_node >"$CRT_WORKSPACE_DIR/$CRT_NODES/$(hostname -f).cfg"
+
+}
+
+
+function create_whatever
+{
+  local ARRAY=()
+  while [[ $# > 0 ]]
+  do
+    ARG="$1"
+    shift
+    case $ARG in
+      -f|--force)
+        CRT_FORCE_KEY_CREATION=1
+        ;;
+    esac
+  done
+
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+  
+
+  ARRAY=($(find "$CRT_WORKSPACE_DIR/$CRT_NODES" -type f -name '*.cfg'))
+
+  WORKSPACE_DIR=$CRT_WORKSPACE_DIR
+  export WORKSPACE_DIR
+  DEFAULT_KEY_LENGTH=$CRT_KEY_LENGTH  
+  for NODE in "${ARRAY[@]}"; do
+    create_cert "$NODE"
+  done 
+
+}
+
+function create_ca_key_file
+{
+  local CA_KEYFILE=$1
+  local CA_KEYLENGTH=$2
+
+  if [ -f "$CA_KEYFILE" ]; then
+    echo "INFO: $CA_KEYFILE already exists"
+    return 
+  fi
+
+  create_certificate_key "$CA_KEYFILE" $CA_KEYLENGTH
+  chmod 0400             "$CA_KEYFILE"
+  openssl rsa -in        "$CA_KEYFILE" -noout -text 2>&1
+
+}
+function create_ca_cert_file
+{
+
+  local SERIAL=$(date +%Y%m%d%H%M)
+  local CONFIG=$CRT_OPENSSL_CONFIG_FILE
+  local   DAYS=$CACRT_DAYS
+  local    KEY="$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR/$CACRT_KEY_NAME"
+  local    OUT="$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME"
+  local   SUBJ="/C=$COUNTRY/ST=$STATE/L=$LOCATION/O=$ORGANISATION/OU=$OU/CN=$COMMON_NAME/emailAddress=$EMAIL"
+  
+  echo "INFO: Generating self-signed certificate";
+  
+  subjectAltName="" 
+  export CRT_WORKSPACE_DIR subjectAltName
+
+  openssl req -batch \
+        -newkey rsa:2048 \
+	-x509 \
+        -set_serial "$SERIAL" \
+        -nodes \
+	-config "$CONFIG"\
+        -subj   "$SUBJ"\
+	-days   "$DAYS"\
+	-key    "$KEY" \
+	-out    "$OUT" \
+        -sha256 
+
+
+}
+function create_cawhatever
+{
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+  create_ca_key_file "$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR/$CACRT_KEY_NAME" $CACRT_KEY_LENGTH
+  create_ca_cert_file 
+  local    OUT="$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME"
+  openssl x509 -in "$OUT" -noout -text -nameopt multiline,show_type 2>&1
+
+}
+
+function get_cert_serial
+{
+  local CERT_FILE=$1
+
+  openssl x509\
+    -in "$CERT_FILE" \
+    -serial \
+    -noout|\
+    awk -F= '{print $2;}'
+}
+
+function revoke_cert
+{
+  local SERIAL=$1
+  openssl ca\
+    -config   "$CRT_OPENSSL_CONFIG_FILE" \
+    -cert     "$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME" \
+    -keyfile  "$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR/$CACRT_KEY_NAME"  \
+    -revoke   "$CRT_WORKSPACE_DIR/$CRT_CRT_DIR/$SERIAL.pem"
+}
+function csr_extract_dns
+{
+  CSR_FILE=$1
+  dump_csr "$CSR_FILE"|grep -E '^[ |\t]+DNS:'| sed 's/IP Address/IP/g'
+}
+
+function sign_cert
+{
+  local CSR=$1
+  local CRT=${CSR%.csr}.crt
+
+  local SRC="$CRT_WORKSPACE_DIR/$CRT_CSR_DIR"
+  local DST="$CRT_WORKSPACE_DIR/$CRT_CRT_DIR"
+
+  subjectAltName=$(csr_extract_dns "$SRC/$CSR")
+  export CRT_WORKSPACE_DIR subjectAltName
+
+  [ "$SRC/$CSR" -nt "$DST/$CRT" ] || return 0
+  if [ -f "$DST/$CRT" ]; then
+    local SERIAL=$(get_cert_serial "$DST/$CRT")
+    revoke_cert "$SERIAL"
+  fi
+
+  local CA_CRT_DIR="$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR"
+  local CA_KEY_DIR="$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR"
+  local CONF="$CRT_WORKSPACE_DIR/$CRT_CRT_CONF_DIR"
+
+  touch "$CONF/serial.new"
+
+  if [ ! -e "$CONF/serial" ]; then
+    echo "03" >"$CONF/serial"
+    touch "$CONF/index.txt"
+    touch "$CONF/index.txt.attr"
+  fi
+  
+  echo "* Signing $CSR"
+  echo "* san:$subjectAltName"
+ 
+  openssl ca\
+    -batch \
+    -rand_serial \
+    -config  "$CRT_OPENSSL_CONFIG_FILE"\
+    -keyfile "$CA_KEY_DIR/$CACRT_KEY_NAME"\
+    -cert    "$CA_CRT_DIR/$CACRT_CRT_NAME"\
+    -in      "$SRC/$CSR" \
+    -out     "$DST/$CRT"\
+    -extensions v3_req\
+    -days $CRT_DAYS\
+    -md sha256
+
+  if [  ! $?  = 0 ]; then
+    echo "**** SIGNING FAILED FOR $CSR"
+    exit 1
+  fi
+}
+function sign
+{
+  local ARRAY=()
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+
+  ARRAY=($(find "$CRT_WORKSPACE_DIR/$CRT_CSR_DIR" -type f -name '*.csr' -printf "%f\n"))
+  for CSR in "${ARRAY[@]}"; do
+    sign_cert "$CSR"
+  done 
+}
+
+function pkcs12_export
+{
+  NAME=$1
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+
+ 
+  local    IN="$CRT_WORKSPACE_DIR/$CRT_CRT_DIR/$NAME.crt"
+  local INKEY="$CRT_WORKSPACE_DIR/$CRT_KEY_DIR/$NAME.key"
+
+  local PFX_DIR="$CRT_WORKSPACE_DIR/pfx"
+
+  [ -d "$PFX_DIR" ] || mkdir -p "$PFX_DIR"
+
+  openssl pkcs12 -export -inkey "$INKEY" -in "$IN" -name "$NAME certificate" -out "$PFX_DIR/$NAME.p12"
+}
+
+function ca_pkcs12_export
+{
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+
+  local P12_FILE=${CACRT_CRT_NAME%.crt}.p12
+
+  local PFX_DIR="$CRT_WORKSPACE_DIR/pfx"
+
+  [ -d "$PFX_DIR" ] || mkdir -p "$PFX_DIR"
+
+  openssl pkcs12 	-export  \
+	-out 		"$PFX_DIR/$P12_FILE"  \
+	-inkey		"$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR/$CACRT_KEY_NAME" \
+	-in		"$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME" \
+	-certfile 	"$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME"
+
+
+}
+function verify
+{
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+
+  openssl verify -CAfile "$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR/$CACRT_CRT_NAME" "$CRT_WORKSPACE_DIR/$CRT_CRT_DIR/"*
+}
+
+function dump_certificate
+{
+  FILE_NAME=$1
+  FILE_EXTENSION=${FILE_NAME##*.}
+
+  if [ "$FILE_EXTENSION" == "csr" ]; then
+    dump_csr "$FILE_NAME"
+    return
+  fi
+
+  if [ "$FILE_EXTENSION" == "crt" ] || [ "$FILE_EXTENSION" == "cer"  ]  || [ "$FILE_EXTENSION" == "pem"  ] ; then
+    dump_crt "$FILE_NAME"
+    return
+  fi
+}
+
+function publish
+{
+  determine_workspace_dir
+  . "$CRT_WORKSPACE_DIR/.certificates/config"
+ 
+  local DST=$1 
+  local CA_CRT_DIR="$CRT_WORKSPACE_DIR/$CRT_CACERT_DIR"
+  local CA_KEY_DIR="$CRT_WORKSPACE_DIR/$CRT_CAKEYS_DIR"
+  local CRT_DIR="$CRT_WORKSPACE_DIR/$CRT_CRT_DIR"
+  local KEY_DIR="$CRT_WORKSPACE_DIR/$CRT_KEY_DIR"
+  
+  DST=${DST:="$CRT_WORKSPACE_DIR/publish"}
+  [ -d "$DST" ] || mkdir -p "$DST"
+
+  for FILE in $KEY_DIR/*.key $CRT_DIR/*.crt "$CA_CRT_DIR/$CACRT_CRT_NAME"; do
+    install -v -m 0644 "$FILE" "$DST"
+  done
+}
+
+function main_parse_args
+{
+  ARRAY=()
+  OPTIONS=()
+
+  [[ $# == 0 ]] && show_help && exit 0
+
+  while [[ $# > 0 ]]
+  do
+    ARG="$1"
+    shift
+    case $ARG in
+      -h|--help)
+	show_help
+        ;;
+
+      -w|--workspace)
+	CRT_WORKSPACE_DIR=$1
+	shift
+	;;
+      create)
+	create_whatever "$@"
+        ;;
+      ca-create)
+	create_cawhatever "$@"
+        ;;
+      sign)
+	sign "$@"
+        ;;
+      update)
+	create_whatever "$@"
+	sign            "$@"
+	;;
+ 
+      pkcs12-export)
+	pkcs12_export "$1"
+	;;
+
+      ca-pkcs12-export)
+	ca_pkcs12_export "$1"
+	;;
+
+      verify)
+	verify
+	;;
+      dump)
+	dump_certificate "$1"
+	;;
+      publish)
+	publish "$1"
+	;;
+      *)
+        UNPARSED_ARGS+=($ARG)
+        ;;
+    esac
+  done
+}
+
+function main
+{
+  CRT_SHARE_DIR=$(dirname "$0")/share/crt
+  CRT_OPENSSL_CONFIG_FILE="$CRT_SHARE_DIR/openssl.cnf"
+  CRT_FORCE_KEY_CREATION=0
+  CRT_DAYS=1460
+  CRT_NODES=nodes
+  CRT_CSR_DIR=csrs
+  CRT_CRT_DIR=certs
+  CRT_KEY_DIR=keys
+
+  CRT_CAKEYS_DIR=cakeys
+  CRT_CACERT_DIR=cacerts
+
+  CRT_CRT_CONF_DIR=conf
+
+  CRT_KEY_LENGTH=2048
+  CRT_DUMP_CERTIFICATE_REQUEST=0
+
+  CACRT_KEY_LENGTH=4096
+  CACRT_CRT_NAME=self-signed-certificate.crt
+  CACRT_KEY_NAME=self-signed-certificate.key
+  CACRT_DAYS=1460 # Max 4 years is now (2014) the official recommendation
+ 
+
+  . "$CRT_SHARE_DIR/functions.sh"
+  main_parse_args "$@"
+
+}
+
+main "$@"
