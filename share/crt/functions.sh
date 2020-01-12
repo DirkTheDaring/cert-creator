@@ -13,21 +13,28 @@ function recursive_config_search
 
   if [ "${NAME}" == "/" ]; then
     return 1
-  fi  
+  fi
 
   DIRNAME=$(dirname "${NAME}")
-  
+
   recursive_config_search "${DIRNAME}"
 }
 ##############################################################################
 function create_config
 {
+#ORGANISATION=${ORGANISATION:="@@@@_SELF_SIGNED_CERTIFICATE_@@@@"}
+#COMMON_NAME=${COMMON_NAME:="@@@@_SELF_SIGN_ROOT_CERTIFICATE_AUTHORITY_@@@@"}
+
+ORGANISATION=${ORGANISATION:="@@@@-SELF-SIGNED-CERTIFICATE-@@@@"}
+COMMON_NAME=${COMMON_NAME:="@@@@-SELF-SIGN-ROOT-CERTIFICATE-AUTHORITY-@@@@"}
+
+
 cat<<EOF
 COUNTRY=DE
 STATE=Bavaria
 LOCATION=Munich
-ORGANISATION=@@@@_SELF_SIGNED_CERTIFICATE_@@@@
-COMMON_NAME=@@@@_SELF_SIGN_ROOT_CERTIFICATE_AUTHORITY_@@@@
+ORGANISATION=${ORGANISATION}
+COMMON_NAME=${COMMON_NAME}
 OU=office
 EMAIL=test@example.com
 EOF
@@ -48,12 +55,12 @@ function create_subjectAltName()
 
 	LIST="DNS:$NAME"
 
-	for DNS in $DNS_LIST; 
+	for DNS in $DNS_LIST;
 	do
 		LIST="$LIST, DNS:$DNS"		
 	done
 
-	for IP in $IP_LIST; 
+	for IP in $IP_LIST;
 	do
 		LIST="$LIST, IP:$IP"		
 	done
@@ -86,7 +93,7 @@ function create_certificate_request
 	-subj "$SUBJECT"\
 	-key "$KEY_FILE"\
 	-out "$CSR_FILE"\
-	-sha256 
+	-sha256
 #	>/dev/null 2>&1
 	
 	return $?
