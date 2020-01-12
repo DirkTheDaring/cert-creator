@@ -428,6 +428,9 @@ function parse_args_create
     ARG="$1"
     shift
     case $ARG in
+      -h|--help)
+	show_help_create
+        ;;
       workspace)
 	create_workspace "$@"
         ;;
