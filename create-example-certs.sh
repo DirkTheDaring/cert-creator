@@ -1,6 +1,9 @@
 #!/bin/bash
-crt create workspace example
-cd example
+DIRNAME=$1
+DIRNAME=${DIRNAME:="example"}
+
+crt create workspace "$DIRNAME"
+cd "$DIRNAME"
 crt create ca-cert
 crt update
 mkdir publish
